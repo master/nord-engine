@@ -1,0 +1,46 @@
+body { background: url("/splash") no-repeat fixed top center; }
+
+input, textarea, select {
+    margin: 2px 0;
+    padding: 2px 3px;
+    vertical-align: middle;
+    font-family: Verdana, Arial, sans-serif;
+    font-weight: normal;
+    font-size: 15px;
+    width: 90%
+}
+
+textarea {
+    vertical-align: top !important;
+}
+
+blockquote {
+    display: block;
+    padding: 0 10px;
+    width: 800px;
+}
+
+blockquote:before, blockquote:after {
+    display: block;
+    width: 50px;
+    font-size: 35px;
+    font-family: "Times New Roman", serif;
+    font-weight: bold;
+}
+
+blockquote:before {
+    content: open-quote;
+    height: 0;
+    margin-left: -1em;
+}
+
+blockquote:after {
+    content: close-quote;
+    height: 50px;
+    margin-top: -70px;
+    margin-left: 810px;
+}
+
+pre {
+    font-size: 130%;
+}

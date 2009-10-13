@@ -1,0 +1,12 @@
+{% extends 'base.html' %}
+{% block content %}
+	{% if page.id %}
+	    {{ page.rendered|safe }}
+	{% endif %}
+{% endblock %}
+{% block footer %}
+{% if user.is_authenticated %}
+{% if page.id %}> <a href="/edit/{{ page.get_path }}">Edit</a> | <a href="/delete/{{ page.get_path }}">Delete</a>
+{% else %}> <a href="/edit/{{ page.name }}">Create</a>{% endif %}
+{% endif %}
+{% endblock %}
