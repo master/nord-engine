@@ -13,7 +13,7 @@ def str_to_set(s):
 
 def get_subset_by_model(model, tags):
     tags_set = str_to_set(tags)
-    return filter(lambda i: str_to_set(i.tags).issuperset(tags_set),
+    return filter(lambda i: str_to_set(i.tags) >= tags_set,
                   TaggedItem.objects.get_by_model(model, tags))
 
 def get_set_by_model(model, tags):

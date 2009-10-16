@@ -16,11 +16,7 @@ def index(request, name):
 
 def view(request, name):
     page = get_set_by_model(Page, to_tags(name))
-    if len(page) != 0:
-        page = page[0]
-    else:
-        page = Page(name=name)
-
+    page = page[0] if page else Page(name=name)
     return render_to_response('view.html', {'page': page, 'user': request.user})
 
 def edit(request, name):
@@ -28,11 +24,8 @@ def edit(request, name):
         raise Http404
 
     page = get_set_by_model(Page, to_tags(name))
-    if len(page) != 0:
-        page = page[0]
-    else:
-        page = None
-       
+    page = page[0] if page else None
+    
     if request.method == 'POST':
         form = PageForm(request.POST)
         if form.is_valid():
@@ -56,11 +49,9 @@ def delete(request, name):
         raise Http404
 
     page = get_set_by_model(Page, to_tags(name))
-    if len(page) != 0:
-        page = page[0]
-    else:
+    if not page:
         raise Http404
-
+    page = page[0]
     path = page.get_path()
     page.delete()
 
@@ -69,16 +60,14 @@ def delete(request, name):
 def dispatch(request, name):
     if name == '':
         name = 'index'
-
-    page = get_set_by_model(Page, to_tags(name))
-    if len(page) == 1:
+        
+    if len(get_set_by_model(Page, to_tags(name))) == 1:
         return view(request, name)
     else:
         if not request.user.is_authenticated():
             raise Http404
         else:
-            pages = get_subset_by_model(Page, to_tags(name))
-            if len(pages) == 0:
+            if not get_subset_by_model(Page, to_tags(name)):
                 return view(request, name)
             else:
                 return index(request, name)
