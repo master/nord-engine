@@ -13,8 +13,8 @@ nord-engine features Creole wiki markup, TLS authentication and a flexible exten
 
 nord-engine depends on:
 
- * Creoleparser: http://code.google.com/p/creoleparser/
- * Python Google Chart: http://pygooglechart.slowchop.com/ 
- * django-google-analytics: http://code.google.com/p/django-google-analytics/
- * sslauth: http://code.google.com/p/sslauth/
- * django-tagging: http://code.google.com/p/django-tagging/
+ * [Creoleparser](http://code.google.com/p/creoleparser)
+ * [Python Google Chart](http://pygooglechart.slowchop.com)
+ * [django-google-analytics](http://code.google.com/p/django-google-analytics)
+ * [sslauth](http://code.google.com/p/sslauth)
+ * [django-tagging](http://code.google.com/p/django-tagging/)
