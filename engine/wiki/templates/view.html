@@ -1,12 +1,18 @@
 {% extends 'base.html' %}
 {% block content %}
-	{% if page.id %}
-	    {{ page.rendered|safe }}
-	{% endif %}
-{% endblock %}
-{% block footer %}
-{% if user.is_authenticated %}
-{% if page.id %}> <a href="/edit/{{ page.get_path }}">Edit</a> | <a href="/delete/{{ page.get_path }}">Delete</a>
-{% else %}> <a href="/edit/{{ page.name }}">Create</a>{% endif %}
+{% if pages %}
+  {% for page in pages %}
+    {% if page.name %}
+<h3><a href="{{ page.get_path }}">{{ page.name|safe }}</a></h3>
+    {% endif %}
+    {{ page.rendered|safe }}
+    {% if user.is_authenticated %}
+> <a href="/edit/{{ page.get_path }}">Edit</a> | <a href="/delete/{{ page.get_path }}">Delete</a><hr/>
+    {% endif %}
+  {% endfor %}
+{% else %}
+  {% if user.is_authenticated %}
+> <a href="/edit/{{ name }}">Create</a>
+  {% endif %}
 {% endif %}
 {% endblock %}

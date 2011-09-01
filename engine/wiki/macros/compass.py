@@ -1,11 +1,15 @@
-# -*- coding: utf-8 -*-
 from pygooglechart import Axis, ScatterChart
+from random import seed,randrange
+
 
 def colors(points):
-    p = len(points)
-    int2col = lambda i: hex(i)[2:].zfill(6).upper()
-    c = [int2col((int('FFFFFF', 16)/p)*i) for i in xrange(p)]
+    c = []
+    for i in xrange(len(points)):
+        seed(i)
+        c = c + ["%.2X%.2X%.2X" % (randrange(0, 255),
+                                   randrange(0, 255), randrange(0, 255))]
     return c
+
 
 def compass_url(points, width=500, height=500):
     legend = lambda p: map(lambda x: x[0], p)

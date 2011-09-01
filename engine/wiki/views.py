@@ -1,31 +1,18 @@
-# -*- coding: utf-8 -*-
 from django.http import HttpResponseRedirect, Http404
 from django.shortcuts import render_to_response
 from django.core.urlresolvers import reverse
 from django.utils.http import urlquote
-
 from forms import PageForm
 from models import Page
-from utils import *
-
 from tagging.models import Tag, TaggedItem
 
-def index(request, name):
-    pages = get_subset_by_model(Page, to_tags(name))
-    return render_to_response('index.html', {'pages': pages, 'path': name})
-
-def view(request, name):
-    page = get_set_by_model(Page, to_tags(name))
-    page = page[0] if page else Page(name=name)
-    return render_to_response('view.html', {'page': page, 'user': request.user})
 
 def edit(request, name):
     if not request.user.is_authenticated():
         raise Http404
 
-    page = get_set_by_model(Page, to_tags(name))
-    page = page[0] if page else None
-    
+    page = get(Page, name, True)
+
     if request.method == 'POST':
         form = PageForm(request.POST)
         if form.is_valid():
@@ -34,7 +21,7 @@ def edit(request, name):
             page.name = form.cleaned_data['name']
             page.content = form.cleaned_data['content']
             page.author = request.user
-            page.tags = to_tags(name)
+            page.tags = ' '.join(filter(None, name.split('/')))
             page.save()
             return HttpResponseRedirect('%s' % urlquote(page.get_path()))
     else:
@@ -44,30 +31,45 @@ def edit(request, name):
             form = PageForm(initial={'name': name})
     return render_to_response('edit.html', {'form': form})
 
+
 def delete(request, name):
     if not request.user.is_authenticated():
         raise Http404
 
-    page = get_set_by_model(Page, to_tags(name))
-    if not page:
+    page = get(Page, name, True)
+
+    if page:
+        page.delete()
+    else:
         raise Http404
-    page = page[0]
-    path = page.get_path()
-    page.delete()
+    return HttpResponseRedirect('%s' % urlquote(name))
 
-    return HttpResponseRedirect('%s' % urlquote(path))
 
-def dispatch(request, name):
+def view(request, name):
     if name == '':
         name = 'index'
-        
-    if len(get_set_by_model(Page, to_tags(name))) == 1:
-        return view(request, name)
+
+    page = get(Page, name, True)
+    pages = [page] if page else get(Page, name)
+
+    if len(pages) == 0 and not request.user.is_authenticated():
+        raise Http404
+
+    return render_to_response('view.html', {'pages': pages,
+                                            'name': name,
+                                            'user': request.user})
+
+
+def get(model, name, precise=False):
+    tags = ' '.join(filter(None, name.split('/')))
+    objects = TaggedItem.objects.get_by_model(model, tags)
+    tag_set = str_to_set(tags)
+    if precise:
+        items = filter(lambda i: str_to_set(i.tags) == tag_set, objects)
+        return items.pop() if len(items) == 1 else None
     else:
-        if not request.user.is_authenticated():
-            raise Http404
-        else:
-            if not get_subset_by_model(Page, to_tags(name)):
-                return view(request, name)
-            else:
-                return index(request, name)
+        return filter(lambda i: str_to_set(i.tags) >= tag_set, objects)
+
+
+def str_to_set(s):
+    return set(s.split(' '))
