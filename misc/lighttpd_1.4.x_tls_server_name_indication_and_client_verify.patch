@@ -1,0 +1,526 @@
+diff -ur a/src/base.h b/src/base.h
+--- a/src/base.h	2009-06-11 12:44:17.000000000 +0300
++++ b/src/base.h	2009-09-29 22:20:46.000000000 +0300
+@@ -31,6 +31,9 @@
+ #if defined HAVE_LIBSSL && defined HAVE_OPENSSL_SSL_H
+ # define USE_OPENSSL
+ # include <openssl/ssl.h>
++# if ! defined OPENSSL_NO_TLSEXT && ! defined SSL_CTRL_SET_TLSEXT_HOSTNAME
++#  define OPENSSL_NO_TLSEXT
++# endif
+ #endif
+ 
+ #ifdef HAVE_FAM_H
+@@ -272,6 +275,10 @@
+ 	buffer *ssl_ca_file;
+ 	buffer *ssl_cipher_list;
+ 	unsigned short ssl_use_sslv2;
++        unsigned short ssl_verifyclient;
++        unsigned short ssl_verifyclient_enforce;
++        unsigned short ssl_verifyclient_depth;
++        buffer *ssl_verifyclient_username;   
+ 
+ 	unsigned short use_ipv6;
+ 	unsigned short defer_accept;
+@@ -422,6 +429,9 @@
+ #ifdef USE_OPENSSL
+ 	SSL *ssl;
+ 	buffer *ssl_error_want_reuse_buffer;
++#ifndef OPENSSL_NO_TLSEXT
++	buffer *tlsext_server_name;
++#endif
+ #endif
+ 	/* etag handling */
+ 	etag_flags_t etag_flags;
+diff -ur a/src/configfile-glue.c b/src/configfile-glue.c
+--- a/src/configfile-glue.c	2009-04-09 18:18:48.000000000 +0300
++++ b/src/configfile-glue.c	2009-09-29 22:16:53.000000000 +0300
+@@ -289,6 +289,10 @@
+ 			default:
+ 				break;
+ 			}
++#if defined USE_OPENSSL && ! defined OPENSSL_NO_TLSEXT
++		} else if (!buffer_is_empty(con->tlsext_server_name)) {
++			l = con->tlsext_server_name;
++#endif
+ 		} else {
+ 			l = srv->empty_string;
+ 		}
+diff -ur a/src/configfile.c b/src/configfile.c
+--- a/src/configfile.c	2009-04-26 20:51:55.000000000 +0300
++++ b/src/configfile.c	2009-09-29 22:30:01.000000000 +0300
+@@ -97,6 +97,11 @@
+ 		{ "server.reject-expect-100-with-417",  NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER }, /* 52 */
+ 		{ "debug.log-timeouts",          NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_CONNECTION }, /* 53 */
+ 		{ "server.defer-accept",         NULL, T_CONFIG_SHORT, T_CONFIG_SCOPE_CONNECTION },     /* 54 */
++		{ "ssl.verifyclient.activate",   NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER }, /* 55 */
++		{ "ssl.verifyclient.enforce",    NULL, T_CONFIG_BOOLEAN, T_CONFIG_SCOPE_SERVER }, /* 56 */
++		{ "ssl.verifyclient.depth",      NULL, T_CONFIG_SHORT,   T_CONFIG_SCOPE_SERVER }, /* 57 */
++		{ "ssl.verifyclient.username",   NULL, T_CONFIG_STRING,  T_CONFIG_SCOPE_SERVER }, /* 58 */
++												  
+ 		{ "server.host",                 "use server.bind instead", T_CONFIG_DEPRECATED, T_CONFIG_SCOPE_UNSET },
+ 		{ "server.docroot",              "use server.document-root instead", T_CONFIG_DEPRECATED, T_CONFIG_SCOPE_UNSET },
+ 		{ "server.virtual-root",         "load mod_simple_vhost and use simple-vhost.server-root instead", T_CONFIG_DEPRECATED, T_CONFIG_SCOPE_UNSET },
+@@ -180,6 +185,11 @@
+ 		s->global_bytes_per_second_cnt = 0;
+ 		s->global_bytes_per_second_cnt_ptr = &s->global_bytes_per_second_cnt;
+ 
++		s->ssl_verifyclient = 0;
++		s->ssl_verifyclient_enforce = 1;
++		s->ssl_verifyclient_username = buffer_init();
++		s->ssl_verifyclient_depth = 9;
++
+ 		cv[2].destination = s->errorfile_prefix;
+ 
+ 		cv[7].destination = s->server_tag;
+@@ -225,6 +235,12 @@
+ 		cv[50].destination = &(s->etag_use_mtime);
+ 		cv[51].destination = &(s->etag_use_size);
+ 
++		/* ssl.verify */
++		cv[55].destination = &(s->ssl_verifyclient);
++		cv[56].destination = &(s->ssl_verifyclient_enforce);
++		cv[57].destination = &(s->ssl_verifyclient_depth);
++		cv[58].destination = s->ssl_verifyclient_username;
++
+ 		srv->config_storage[i] = s;
+ 
+ 		if (0 != (ret = config_insert_values_global(srv, ((data_config *)srv->config_context->data[i])->value, cv))) {
+@@ -296,13 +312,19 @@
+ 	PATCH(is_ssl);
+ 
+ 	PATCH(ssl_pemfile);
++	PATCH(ssl_ctx);
+ 	PATCH(ssl_ca_file);
+ 	PATCH(ssl_cipher_list);
+ 	PATCH(ssl_use_sslv2);
+ 	PATCH(etag_use_inode);
+ 	PATCH(etag_use_mtime);
+ 	PATCH(etag_use_size);
+- 
++
++	PATCH(ssl_verifyclient);
++	PATCH(ssl_verifyclient_enforce);
++	PATCH(ssl_verifyclient_depth);
++	PATCH(ssl_verifyclient_username);
++
+ 	return 0;
+ }
+ 
+@@ -351,6 +373,7 @@
+ 				PATCH(etag_use_size);
+ 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.pemfile"))) {
+ 				PATCH(ssl_pemfile);
++				PATCH(ssl_ctx);
+ 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.ca-file"))) {
+ 				PATCH(ssl_ca_file);
+ 			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.use-sslv2"))) {
+@@ -391,6 +414,14 @@
+ 				PATCH(global_kbytes_per_second);
+ 				PATCH(global_bytes_per_second_cnt);
+ 				con->conf.global_bytes_per_second_cnt_ptr = &s->global_bytes_per_second_cnt;
++			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.verifyclient.activate"))) {
++			        PATCH(ssl_verifyclient);
++			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.verifyclient.enforce"))) {
++			        PATCH(ssl_verifyclient_enforce);
++			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.verifyclient.depth"))) {
++			       PATCH(ssl_verifyclient_depth);
++			} else if (buffer_is_equal_string(du->key, CONST_STR_LEN("ssl.verifyclient.username"))) {
++			       PATCH(ssl_verifyclient_username);
+ 			}
+ 		}
+ 	}
+diff -ur a/src/connections.c b/src/connections.c
+--- a/src/connections.c	2009-06-11 16:54:30.000000000 +0300
++++ b/src/connections.c	2009-09-29 22:16:53.000000000 +0300
+@@ -667,6 +667,9 @@
+ 	CLEAN(server_name);
+ 	CLEAN(error_handler);
+ 	CLEAN(dst_addr_buf);
++#if defined USE_OPENSSL && ! defined OPENSSL_NO_TLSEXT
++	CLEAN(tlsext_server_name);
++#endif
+ 
+ #undef CLEAN
+ 	con->write_queue = chunkqueue_init();
+@@ -731,6 +734,9 @@
+ 		CLEAN(server_name);
+ 		CLEAN(error_handler);
+ 		CLEAN(dst_addr_buf);
++#if defined USE_OPENSSL && ! defined OPENSSL_NO_TLSEXT
++		CLEAN(tlsext_server_name);
++#endif
+ #undef CLEAN
+ 		free(con->plugin_ctx);
+ 		free(con->cond_cache);
+@@ -1341,6 +1347,9 @@
+ 				return NULL;
+ 			}
+ 
++#ifndef OPENSSL_NO_TLSEXT
++			SSL_set_app_data(con->ssl, con);
++#endif
+ 			SSL_set_accept_state(con->ssl);
+ 			con->conf.is_ssl=1;
+ 
+diff -ur a/src/network.c b/src/network.c
+--- a/src/network.c	2009-04-26 20:51:55.000000000 +0300
++++ b/src/network.c	2009-09-30 15:51:25.000000000 +0300
+@@ -62,6 +62,54 @@
+ 	return HANDLER_GO_ON;
+ }
+ 
++#if defined USE_OPENSSL && ! defined OPENSSL_NO_TLSEXT
++int network_ssl_servername_callback(SSL *ssl, int *al, server *srv) {
++	const char *servername;
++	connection *con = (connection *) SSL_get_app_data(ssl);
++	specific_config *s = &con->conf;
++
++	buffer_copy_string(con->uri.scheme, "https");
++
++	if (NULL == (servername = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name))) {
++		log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
++				"failed to get TLS server name");
++		return SSL_TLSEXT_ERR_NOACK;
++	}
++	buffer_copy_string(con->tlsext_server_name, servername);
++	buffer_to_lower(con->tlsext_server_name);
++
++	config_cond_cache_reset(srv, con);
++	config_setup_connection(srv, con);
++
++	config_patch_connection(srv, con, COMP_SERVER_SOCKET);
++	config_patch_connection(srv, con, COMP_HTTP_SCHEME);
++	config_patch_connection(srv, con, COMP_HTTP_HOST);
++
++	if (NULL == con->conf.ssl_ctx) {
++		log_error_write(srv, __FILE__, __LINE__, "ssb", "SSL:",
++				"null SSL_CTX for TLS server name", con->tlsext_server_name);
++		return SSL_TLSEXT_ERR_ALERT_FATAL;
++	}
++
++	/* switch to new SSL_CTX in reaction to a client's server_name extension */
++	if (con->conf.ssl_ctx != SSL_set_SSL_CTX(ssl, con->conf.ssl_ctx)) {
++		log_error_write(srv, __FILE__, __LINE__, "ssb", "SSL:",
++				"failed to set SSL_CTX for TLS server name", con->tlsext_server_name);
++		return SSL_TLSEXT_ERR_ALERT_FATAL;
++	}
++
++	SSL_set_options(ssl, SSL_CTX_get_options(con->conf.ssl_ctx));
++
++	if ((SSL_get_verify_mode(ssl) == SSL_VERIFY_NONE) ||
++            (SSL_num_renegotiations(ssl) == 0)) {
++		SSL_set_verify(ssl, SSL_CTX_get_verify_mode(con->conf.ssl_ctx),
++			 SSL_CTX_get_verify_callback(con->conf.ssl_ctx));
++        }
++
++	return SSL_TLSEXT_ERR_OK;
++}
++#endif
++
+ static int network_server_init(server *srv, buffer *host_token, specific_config *s) {
+ 	int val;
+ 	socklen_t addr_len;
+@@ -308,78 +356,10 @@
+ 
+ 	if (s->is_ssl) {
+ #ifdef USE_OPENSSL
+-		if (srv->ssl_is_init == 0) {
+-			SSL_load_error_strings();
+-			SSL_library_init();
+-			srv->ssl_is_init = 1;
+-
+-			if (0 == RAND_status()) {
+-				log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
+-						"not enough entropy in the pool");
+-				return -1;
+-			}
+-		}
+-
+-		if (NULL == (s->ssl_ctx = SSL_CTX_new(SSLv23_server_method()))) {
+-			log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
+-					ERR_error_string(ERR_get_error(), NULL));
+-			return -1;
+-		}
+-
+-		if (!s->ssl_use_sslv2) {
+-			/* disable SSLv2 */
+-			if (SSL_OP_NO_SSLv2 != SSL_CTX_set_options(s->ssl_ctx, SSL_OP_NO_SSLv2)) {
+-				log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
+-						ERR_error_string(ERR_get_error(), NULL));
+-				return -1;
+-			}
+-		}
+-
+-		if (!buffer_is_empty(s->ssl_cipher_list)) {
+-			/* Disable support for low encryption ciphers */
+-			if (SSL_CTX_set_cipher_list(s->ssl_ctx, s->ssl_cipher_list->ptr) != 1) {
+-				log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
+-						ERR_error_string(ERR_get_error(), NULL));
+-				return -1;
+-			}
+-		}
+-
+-		if (buffer_is_empty(s->ssl_pemfile)) {
++		if (NULL == (srv_socket->ssl_ctx = s->ssl_ctx)) {
+ 			log_error_write(srv, __FILE__, __LINE__, "s", "ssl.pemfile has to be set");
+ 			return -1;
+ 		}
+-
+-		if (!buffer_is_empty(s->ssl_ca_file)) {
+-			if (1 != SSL_CTX_load_verify_locations(s->ssl_ctx, s->ssl_ca_file->ptr, NULL)) {
+-				log_error_write(srv, __FILE__, __LINE__, "ssb", "SSL:",
+-						ERR_error_string(ERR_get_error(), NULL), s->ssl_ca_file);
+-				return -1;
+-			}
+-		}
+-
+-		if (SSL_CTX_use_certificate_file(s->ssl_ctx, s->ssl_pemfile->ptr, SSL_FILETYPE_PEM) < 0) {
+-			log_error_write(srv, __FILE__, __LINE__, "ssb", "SSL:",
+-					ERR_error_string(ERR_get_error(), NULL), s->ssl_pemfile);
+-			return -1;
+-		}
+-
+-		if (SSL_CTX_use_PrivateKey_file (s->ssl_ctx, s->ssl_pemfile->ptr, SSL_FILETYPE_PEM) < 0) {
+-			log_error_write(srv, __FILE__, __LINE__, "ssb", "SSL:",
+-					ERR_error_string(ERR_get_error(), NULL), s->ssl_pemfile);
+-			return -1;
+-		}
+-
+-		if (SSL_CTX_check_private_key(s->ssl_ctx) != 1) {
+-			log_error_write(srv, __FILE__, __LINE__, "sssb", "SSL:",
+-					"Private key does not match the certificate public key, reason:",
+-					ERR_error_string(ERR_get_error(), NULL),
+-					s->ssl_pemfile);
+-			return -1;
+-		}
+-		SSL_CTX_set_default_read_ahead(s->ssl_ctx, 1);
+-		SSL_CTX_set_mode(s->ssl_ctx, SSL_CTX_get_mode(s->ssl_ctx) | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+-
+-		srv_socket->ssl_ctx = s->ssl_ctx;
+ #else
+ 
+ 		buffer_free(srv_socket->srv_token);
+@@ -492,6 +472,130 @@
+ 		{ NETWORK_BACKEND_UNSET,        	NULL }
+ 	};
+ 
++#ifdef USE_OPENSSL
++	/* load SSL certificates */
++	for (i = 0; i < srv->config_context->used; i++) {
++		data_config *dc = (data_config *)srv->config_context->data[i];
++		specific_config *s = srv->config_storage[i];
++
++		if (buffer_is_empty(s->ssl_pemfile)) continue;
++
++#ifdef OPENSSL_NO_TLSEXT
++		if (COMP_HTTP_HOST == dc->comp) {
++		    log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
++				    "can't use ssl.pemfile with $HTTP[\"host\"], openssl version does not support TLS extensions");
++		    return -1;
++		}
++#endif
++
++		if (srv->ssl_is_init == 0) {
++			SSL_load_error_strings();
++			SSL_library_init();
++			srv->ssl_is_init = 1;
++
++			if (0 == RAND_status()) {
++				log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
++						"not enough entropy in the pool");
++				return -1;
++			}
++		}
++
++		if (NULL == (s->ssl_ctx = SSL_CTX_new(SSLv23_server_method()))) {
++			log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
++					ERR_error_string(ERR_get_error(), NULL));
++			return -1;
++		}
++
++		if (!s->ssl_use_sslv2) {
++			/* disable SSLv2 */
++			if (SSL_OP_NO_SSLv2 != SSL_CTX_set_options(s->ssl_ctx, SSL_OP_NO_SSLv2)) {
++				log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
++						ERR_error_string(ERR_get_error(), NULL));
++				return -1;
++			}
++		}
++
++		if (!buffer_is_empty(s->ssl_cipher_list)) {
++			/* Disable support for low encryption ciphers */
++			if (SSL_CTX_set_cipher_list(s->ssl_ctx, s->ssl_cipher_list->ptr) != 1) {
++				log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
++						ERR_error_string(ERR_get_error(), NULL));
++				return -1;
++			}
++		}
++
++		if (SSL_CTX_use_certificate_file(s->ssl_ctx, s->ssl_pemfile->ptr, SSL_FILETYPE_PEM) < 0) {
++			log_error_write(srv, __FILE__, __LINE__, "ssb", "SSL:",
++					ERR_error_string(ERR_get_error(), NULL), s->ssl_pemfile);
++			return -1;
++		}
++
++		if (SSL_CTX_use_PrivateKey_file (s->ssl_ctx, s->ssl_pemfile->ptr, SSL_FILETYPE_PEM) < 0) {
++			log_error_write(srv, __FILE__, __LINE__, "ssb", "SSL:",
++					ERR_error_string(ERR_get_error(), NULL), s->ssl_pemfile);
++			return -1;
++		}
++
++		if (SSL_CTX_check_private_key(s->ssl_ctx) != 1) {
++			log_error_write(srv, __FILE__, __LINE__, "sssb", "SSL:",
++					"Private key does not match the certificate public key, reason:",
++					ERR_error_string(ERR_get_error(), NULL),
++					s->ssl_pemfile);
++			return -1;
++		}
++		SSL_CTX_set_default_read_ahead(s->ssl_ctx, 1);
++		SSL_CTX_set_mode(s->ssl_ctx, SSL_CTX_get_mode(s->ssl_ctx) | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
++
++		if (!buffer_is_empty(s->ssl_ca_file)) {
++			if (1 != SSL_CTX_load_verify_locations(s->ssl_ctx, s->ssl_ca_file->ptr, NULL)) {
++				log_error_write(srv, __FILE__, __LINE__, "ssb", "SSL:",
++						ERR_error_string(ERR_get_error(), NULL), s->ssl_ca_file);
++				return -1;
++			}
++			if (s->ssl_verifyclient) { 			  
++				STACK_OF(X509_NAME) *certs = SSL_load_client_CA_file(s->ssl_ca_file->ptr);
++				if (!certs) {
++					log_error_write(srv, __FILE__, __LINE__, "ssb", "SSL:",
++							ERR_error_string(ERR_get_error(), NULL), s->ssl_ca_file);
++				}
++				if (!buffer_is_empty(s->server_name)) {
++					if (SSL_CTX_set_session_id_context(s->ssl_ctx, (unsigned const char*)CONST_BUF_LEN(s->server_name)) != 1) { 
++						log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:", 
++							ERR_error_string(ERR_get_error(), NULL)); 
++							return -1; 
++					}
++				} else {
++					log_error_write(
++						srv, __FILE__, __LINE__, "s",
++						"SSL: You specified ssl.verifyclient.activate but no server.name"
++					);
++				}
++				SSL_CTX_set_client_CA_list(s->ssl_ctx, certs);
++				SSL_CTX_set_verify(
++					s->ssl_ctx,
++					SSL_VERIFY_PEER | (s->ssl_verifyclient_enforce ? SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0),
++					NULL
++				); 
++				SSL_CTX_set_verify_depth(s->ssl_ctx, s->ssl_verifyclient_depth);
++				}
++		} else if (s->ssl_verifyclient) {
++			log_error_write(
++				srv, __FILE__, __LINE__, "s",
++				"SSL: You specified ssl.verifyclient.activate but no ca_file"
++				);
++		}
++
++#ifndef OPENSSL_NO_TLSEXT
++		if (!SSL_CTX_set_tlsext_servername_callback(s->ssl_ctx, network_ssl_servername_callback) ||
++		    !SSL_CTX_set_tlsext_servername_arg(s->ssl_ctx, srv)) {
++			log_error_write(srv, __FILE__, __LINE__, "ss", "SSL:",
++					"failed to initialize TLS servername callback, openssl library does not support TLS servername extension");
++			return -1;
++		}
++#endif
++	}
++#endif
++
+ 	b = buffer_init();
+ 
+ 	buffer_copy_string_buffer(b, srv->srvconf.bindhost);
+diff -ur a/src/response.c b/src/response.c
+--- a/src/response.c	2009-06-19 20:22:37.000000000 +0300
++++ b/src/response.c	2009-09-29 22:34:08.000000000 +0300
+@@ -129,7 +129,62 @@
+ 	return 0;
+ }
+ 
+-
++#ifdef USE_OPENSSL
++static void https_add_ssl_entries(connection *con) {
++	X509 *xs;
++	X509_NAME *xn;
++	X509_NAME_ENTRY *xe;
++	data_string *envcv;
++
++    if (NULL == (envcv = (data_string *)array_get_unused_element(con->environment, TYPE_STRING))) {
++		envcv = data_string_init();
++    }
++	buffer_copy_string_len(envcv->key, CONST_STR_LEN("SSL_CLIENT_VERIFY"));
++
++	if (
++		SSL_get_verify_result(con->ssl) != X509_V_OK
++		|| !(xs = SSL_get_peer_certificate(con->ssl))
++	) {
++		buffer_copy_string_len(envcv->value, CONST_STR_LEN("FAILED:"));
++		array_insert_unique(con->environment, (data_unset *)envcv);
++		return;
++	} else {
++		buffer_copy_string_len(envcv->value, CONST_STR_LEN("SUCCESS"));
++		array_insert_unique(con->environment, (data_unset *)envcv);
++    }
++	
++	xn = X509_get_subject_name(xs);
++	for (int i = 0, nentries = X509_NAME_entry_count(xn); i < nentries; ++i) {
++		int xobjnid;
++		const char * xobjsn;
++		data_string *envds;
++
++		if (!(xe = X509_NAME_get_entry(xn, i))) {
++			continue;
++		}
++		xobjnid = OBJ_obj2nid((ASN1_OBJECT*)X509_NAME_ENTRY_get_object(xe));
++		xobjsn = OBJ_nid2sn(xobjnid);
++		if (!xobjsn) {
++			continue;
++		}
++		
++		if (NULL == (envds = (data_string *)array_get_unused_element(con->environment, TYPE_STRING))) {
++			envds = data_string_init();
++		}
++		buffer_copy_string_len(envds->key, CONST_STR_LEN("SSL_CLIENT_S_DN_"));
++		buffer_append_string(envds->key, xobjsn);
++		buffer_copy_string(
++			envds->value,
++			(const char *)xe->value->data
++		);
++		if (buffer_is_equal(con->conf.ssl_verifyclient_username, envds->key)) {
++			buffer_copy_string_buffer(con->authed_user, envds->value);
++		}
++		array_insert_unique(con->environment, (data_unset *)envds);
++	}
++	X509_free(xs);
++}
++#endif
+ 
+ handler_t http_response_prepare(server *srv, connection *con) {
+ 	handler_t r;
+@@ -328,8 +383,11 @@
+ 		 *
+ 		 */
+ 
+-
+-
++#ifdef USE_OPENSSL
++		if (con->conf.is_ssl && con->conf.ssl_verifyclient) {
++			https_add_ssl_entries(con);
++		}
++#endif
+ 
+ 		/* 1. stat()
+ 		 * ... ISREG() -> ok, go on
+diff -ur a/src/server.c b/src/server.c
+--- a/src/server.c	2009-06-11 12:44:17.000000000 +0300
++++ b/src/server.c	2009-09-29 22:35:26.000000000 +0300
+@@ -304,6 +304,7 @@
+ 			buffer_free(s->ssl_cipher_list);
+ 			buffer_free(s->error_handler);
+ 			buffer_free(s->errorfile_prefix);
++			buffer_free(s->ssl_verifyclient_username);
+ 			array_free(s->mimetypes);
+ #ifdef USE_OPENSSL
+ 			SSL_CTX_free(s->ssl_ctx);

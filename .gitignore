@@ -1,0 +1,10 @@
+*.py[co]
+*.diff
+*.err
+*.orig
+*.log
+*.rej
+*.swo
+*.swp
+*.vi
+*~
